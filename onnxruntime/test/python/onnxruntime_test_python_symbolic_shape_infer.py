@@ -308,6 +308,7 @@ class TestSymbolicShapeInferenceForOperators(unittest.TestCase):
             helper.make_tensor_value_info("present_value", TensorProto.FLOAT16, ["b", 2, 12, 8]),
         ]
         self._check_shapes(graph, inferred.graph, expected_shapes)
+
     def _infer_sparse_attention_indexer(self, node, inputs):
         outputs = [helper.make_tensor_value_info(name, TensorProto.UNDEFINED, None) for name in node.output if name]
         graph = helper.make_graph([node], "SparseAttentionIndexer_Test", inputs, outputs)

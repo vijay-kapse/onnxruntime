@@ -5389,7 +5389,7 @@ ONNX_MS_OPERATOR_SET_SCHEMA(
         .TypeConstraint("T",
                         {"tensor(float)", "tensor(float16)", "tensor(bfloat16)"},
                         "Constrain input and output to floating-point tensors.")
-         .TypeConstraint("M",
+        .TypeConstraint("M",
                         {"tensor(float)", "tensor(float16)", "tensor(bfloat16)"},
                         "Constrain scale to floating-point tensors.")
         .TypeAndShapeInferenceFunction([](ONNX_NAMESPACE::InferenceContext& ctx) {
@@ -5416,7 +5416,7 @@ ONNX_MS_OPERATOR_SET_SCHEMA(
         .TypeConstraint("T",
                         {"tensor(float)", "tensor(float16)", "tensor(bfloat16)"},
                         "Constrain input and output to floating-point tensors.")
-         .TypeConstraint("M",
+        .TypeConstraint("M",
                         {"tensor(float)", "tensor(float16)", "tensor(bfloat16)"},
                         "Constrain the optional scale to floating-point tensors.")
         .TypeAndShapeInferenceFunction([](ONNX_NAMESPACE::InferenceContext& ctx) {
@@ -5447,7 +5447,7 @@ ONNX_MS_OPERATOR_SET_SCHEMA(
         .TypeConstraint("T",
                         {"tensor(float)", "tensor(float16)", "tensor(bfloat16)"},
                         "Constrain streams and output to floating-point tensors.")
-         .TypeConstraint("M",
+        .TypeConstraint("M",
                         {"tensor(float)", "tensor(float16)", "tensor(bfloat16)"},
                         "Constrain mixing weights to floating-point tensors.")
         .TypeAndShapeInferenceFunction([](ONNX_NAMESPACE::InferenceContext& ctx) {
@@ -5509,7 +5509,7 @@ ONNX_MS_OPERATOR_SET_SCHEMA(
         .TypeConstraint("T",
                         {"tensor(float)", "tensor(float16)", "tensor(bfloat16)"},
                         "Constrain streams, block output, and output to floating-point tensors.")
-         .TypeConstraint("M",
+        .TypeConstraint("M",
                         {"tensor(float)", "tensor(float16)", "tensor(bfloat16)"},
                         "Constrain mixing weights to floating-point tensors.")
         .TypeAndShapeInferenceFunction([](ONNX_NAMESPACE::InferenceContext& ctx) {
