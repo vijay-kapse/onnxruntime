@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "core/common/logging/logging.h"
@@ -334,8 +335,11 @@ TEST(CoreMLExecutionProviderTest, GatherNDConstantIndicesMLProgram) {
 
 // Padded Conv with a dilated kernel. CoreML (BNNS on the CPU) returns wrong values near the padded edges when the
 // kernel span is wide, and crashes on larger inputs (issue #33544), so those nodes must fall back to the CPU EP.
+// With symbolic_weight, W is a graph input with symbolic spatial dims and the Conv has no kernel_shape, so the kernel
+// size is only known at runtime (ML Program supports a non-constant weight).
 static void RunDilatedPaddedConvTest(const std::vector<int64_t>& input_shape, int64_t kernel, int64_t dilation,
-                                     int64_t pad, ExpectedEPNodeAssignment expected_assignment) {
+                                     int64_t pad, ExpectedEPNodeAssignment expected_assignment,
+                                     bool symbolic_weight = false) {
   const int64_t channels = input_shape[1];
   const size_t num_spatial_dims = input_shape.size() - 2;
 
@@ -349,26 +353,48 @@ static void RunDilatedPaddedConvTest(const std::vector<int64_t>& input_shape, in
   x_type.mutable_tensor_type()->set_elem_type(ONNX_NAMESPACE::TensorProto_DataType_FLOAT);
   for (auto d : input_shape) x_type.mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_value(d);
   auto& x = graph.GetOrCreateNodeArg("X", &x_type);
-  auto& y = graph.GetOrCreateNodeArg("Y", nullptr);
-
-  ONNX_NAMESPACE::TensorProto w;
-  w.set_name("W");
-  w.set_data_type(ONNX_NAMESPACE::TensorProto_DataType_FLOAT);
-  w.add_dims(channels);
-  w.add_dims(channels);
-  int64_t w_size = channels * channels;
+  // Without a known kernel size ONNX shape inference can't infer the output shape, so declare it like an exported
+  // model would. Otherwise the Conv is rejected for having no output shape.
+  ONNX_NAMESPACE::TypeProto y_type;
+  y_type.mutable_tensor_type()->set_elem_type(ONNX_NAMESPACE::TensorProto_DataType_FLOAT);
+  y_type.mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_value(input_shape[0]);
+  y_type.mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_value(channels);
   for (size_t i = 0; i < num_spatial_dims; ++i) {
-    w.add_dims(kernel);
-    w_size *= kernel;
+    y_type.mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_param("y" + std::to_string(i));
   }
-  for (int64_t i = 0; i < w_size; ++i) {
-    w.add_float_data(std::sin(0.37f * static_cast<float>(i)));
+  auto& y = graph.GetOrCreateNodeArg("Y", symbolic_weight ? &y_type : nullptr);
+
+  std::vector<int64_t> w_shape{channels, channels};
+  w_shape.insert(w_shape.end(), num_spatial_dims, kernel);
+  int64_t w_size = 1;
+  for (auto d : w_shape) w_size *= d;
+  std::vector<float> w_data(static_cast<size_t>(w_size));
+  for (size_t i = 0; i < w_data.size(); ++i) {
+    w_data[i] = std::sin(0.37f * static_cast<float>(i));
   }
-  graph.AddInitializedTensor(w);
-  auto& w_arg = graph.GetOrCreateNodeArg("W", nullptr);
+
+  ONNX_NAMESPACE::TypeProto w_type;
+  w_type.mutable_tensor_type()->set_elem_type(ONNX_NAMESPACE::TensorProto_DataType_FLOAT);
+  if (symbolic_weight) {
+    w_type.mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_value(channels);
+    w_type.mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_value(channels);
+    for (size_t i = 0; i < num_spatial_dims; ++i) {
+      w_type.mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_param("k" + std::to_string(i));
+    }
+  } else {
+    ONNX_NAMESPACE::TensorProto w;
+    w.set_name("W");
+    w.set_data_type(ONNX_NAMESPACE::TensorProto_DataType_FLOAT);
+    for (auto d : w_shape) w.add_dims(d);
+    for (auto v : w_data) w.add_float_data(v);
+    graph.AddInitializedTensor(w);
+  }
+  auto& w_arg = graph.GetOrCreateNodeArg("W", symbolic_weight ? &w_type : nullptr);
 
   auto& conv = graph.AddNode("conv", "Conv", "", {&x, &w_arg}, {&y});
-  conv.AddAttribute("kernel_shape", std::vector<int64_t>(num_spatial_dims, kernel));
+  if (!symbolic_weight) {
+    conv.AddAttribute("kernel_shape", std::vector<int64_t>(num_spatial_dims, kernel));
+  }
   conv.AddAttribute("dilations", std::vector<int64_t>(num_spatial_dims, dilation));
   conv.AddAttribute("pads", std::vector<int64_t>(2 * num_spatial_dims, pad));
   ORT_THROW_IF_ERROR(graph.Resolve());
@@ -387,6 +413,11 @@ static void RunDilatedPaddedConvTest(const std::vector<int64_t>& input_shape, in
   CreateMLValue<float>(CPUAllocator::DefaultInstance(), input_shape, x_data, &x_value);
   NameMLValMap feeds;
   feeds.insert(std::make_pair("X", x_value));
+  if (symbolic_weight) {
+    OrtValue w_value;
+    CreateMLValue<float>(CPUAllocator::DefaultInstance(), w_shape, w_data, &w_value);
+    feeds.insert(std::make_pair("W", w_value));
+  }
 
   EPVerificationParams params{expected_assignment};
   params.fp32_abs_err = 1e-3f;
@@ -403,6 +434,11 @@ TEST(CoreMLExecutionProviderTest, Conv1DDilatedWithPadsWideSpan) {
 
 TEST(CoreMLExecutionProviderTest, Conv2DDilatedWithPadsWideSpan) {
   RunDilatedPaddedConvTest({1, 4, 120, 120}, 9, 9, 36, ExpectedEPNodeAssignment::None);
+}
+
+TEST(CoreMLExecutionProviderTest, Conv1DDilatedWithPadsSymbolicKernel) {
+  // The kernel size is only known at runtime, so the span can't be checked. With K = 7 the span is 72.
+  RunDilatedPaddedConvTest({1, 16, 200}, 7, 12, 36, ExpectedEPNodeAssignment::None, /*symbolic_weight*/ true);
 }
 
 TEST(CoreMLExecutionProviderTest, Conv1DDilatedWithPadsNarrowSpan) {

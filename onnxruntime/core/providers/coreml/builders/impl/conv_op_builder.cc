@@ -439,12 +439,23 @@ bool ConvOpBuilder::IsOpSupportedImpl(const Node& node, const OpBuilderInputPara
     const bool is_padded = std::any_of(pads.cbegin(), pads.cend(), [](int64_t p) { return p != 0; }) ||
                            auto_pad == AutoPadType::SAME_UPPER || auto_pad == AutoPadType::SAME_LOWER;
     const auto dilations = helper.Get("dilations", std::vector<int64_t>{});
+    const auto kernel_shape = helper.Get("kernel_shape", std::vector<int64_t>{});
     if (is_padded && dilations.size() == weight_shape_vec.size() - 2) {
       for (size_t i = 0; i < dilations.size(); ++i) {
-        if (dilations[i] > 1 && (weight_shape_vec[i + 2] - 1) * dilations[i] >= kMinUnsafePaddedDilatedKernelSpan) {
+        if (dilations[i] <= 1) {
+          continue;
+        }
+        // A non-constant weight in an ML Program can have symbolic spatial dims. Without a kernel_shape the span
+        // is unknown, so it can't be shown to be safe.
+        const int64_t kernel = kernel_shape.size() == dilations.size() ? kernel_shape[i] : weight_shape_vec[i + 2];
+        if (kernel < 0) {
+          LOGS(logger, VERBOSE) << "Conv [" << name << "] has padding, dilation " << dilations[i]
+                                << " and an unknown kernel size, which CoreML can compute incorrectly";
+          return false;
+        }
+        if ((kernel - 1) * dilations[i] >= kMinUnsafePaddedDilatedKernelSpan) {
           LOGS(logger, VERBOSE) << "Conv [" << name << "] has padding and a dilated kernel span of "
-                                << (weight_shape_vec[i + 2] - 1) * dilations[i]
-                                << ", which CoreML can compute incorrectly";
+                                << (kernel - 1) * dilations[i] << ", which CoreML can compute incorrectly";
           return false;
         }
       }
