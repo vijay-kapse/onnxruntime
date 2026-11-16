@@ -414,7 +414,7 @@ TEST(CoreMLExecutionProviderTest, MatMulStaticKOnADynamicKOnB) {
 }
 
 TEST(CoreMLExecutionProviderTest, MatMulDynamicKOnAStaticKOnB) {
-  RunMatMulDynamicKTest({-1, -1, 96}, {-1, -1, -1}, {1, 5, 96}, {1, 96, 8}, false, ExpectedEPNodeAssignment::None);
+  RunMatMulDynamicKTest({-1, -1, -1}, {-1, 96, -1}, {1, 5, 96}, {1, 96, 8}, false, ExpectedEPNodeAssignment::None);
   RunMatMulDynamicKTest({-1, 2, -1, -1}, {1, 1, 96, 9}, {1, 2, 5, 96}, {1, 1, 96, 9}, true,
                         ExpectedEPNodeAssignment::None);
 }
