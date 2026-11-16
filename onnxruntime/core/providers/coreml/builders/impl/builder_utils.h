@@ -5,12 +5,12 @@
 
 #pragma once
 
-#include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <optional>
 
 #include <gsl/gsl>
+#include "core/common/narrow.h"
 #include "core/common/status.h"
 #include "core/graph/basic_types.h"
 #include "core/providers/common.h"
@@ -60,12 +60,20 @@ void CreateCoreMLWeight(CoreML::Specification::WeightParams& weight, gsl::span<c
 //
 
 // CoreML operations only use int32, so ONNX int64 values are converted to int32.
-// ONNX models commonly use INT64_MAX/INT64_MIN as 'until the end' sentinels (e.g. the `ends` of a Slice that is
-// built at runtime from a Concat), so saturate values that are out of the int32 range instead of failing.
-// This matches the coremltools `const` op, which clips int64 data to the int32 range.
-inline int32_t SaturateInt64ToInt32(int64_t v) {
-  return static_cast<int32_t>(std::clamp<int64_t>(v, std::numeric_limits<int32_t>::min(),
-                                                  std::numeric_limits<int32_t>::max()));
+// Exporters use the int64 limits as 'unbounded' markers: INT64_MAX for 'until the end' and INT64_MIN/-INT64_MAX for
+// 'until the start' of a Slice, sometimes in a tensor built at runtime (e.g. Concat(x, [INT64_MAX]) used as the
+// `ends` of a Slice, as in exported VITS/piper models). Map those to the int32 limits, which keep the same meaning
+// for Slice: INT32_MAX is also an 'until the end' sentinel, and anything below -INT32_MAX clamps to the start.
+// Any other value outside the int32 range is a real value that CoreML cannot represent, so it is still rejected
+// by the narrowing check rather than silently clamped.
+inline int32_t NarrowInt64ToInt32(int64_t v) {
+  if (v == std::numeric_limits<int64_t>::max()) {
+    return std::numeric_limits<int32_t>::max();
+  }
+  if (v == std::numeric_limits<int64_t>::min() || v == -std::numeric_limits<int64_t>::max()) {
+    return std::numeric_limits<int32_t>::min();
+  }
+  return narrow<int32_t>(v);
 }
 
 // helper for static_assert where the value needs to be dependent on a template parameter

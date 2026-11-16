@@ -332,14 +332,13 @@ TEST(CoreMLExecutionProviderTest, GatherNDConstantIndicesMLProgram) {
 #endif
 }
 
-// Concat of a runtime value with an INT64_MAX/INT64_MIN 'until the end' sentinel, used as the `ends` of a Slice.
-// This is how exported VITS (piper) models build their Slice ends. CoreML only has int32, so the sentinel has to be
-// saturated to the int32 range when the initializer is added to the CoreML model. Narrowing it threw a
-// gsl::narrowing_error and failed session creation. The Concat runs on CoreML and the Slice falls back to the CPU EP
-// because its `ends` input is not a constant.
-static void RunConcatInt64SentinelSliceEndsTest(int64_t sentinel, int64_t step) {
+// Concat of a runtime value with an int64 constant, used as the `ends` of a Slice. Exported VITS (piper) models build
+// their Slice ends this way with an INT64_MAX 'until the end' sentinel. CoreML only has int32, so the constant is
+// converted when the initializer is added to the CoreML model. The Concat runs on CoreML and the Slice falls back to
+// the CPU EP because its `ends` input is not a constant.
+static std::string MakeConcatInt64SliceEndsModel(int64_t end1, int64_t step) {
   std::unordered_map<std::string, int> domain_to_version{{kOnnxDomain, 17}};
-  onnxruntime::Model model("concat_int64_sentinel", false, ModelMetaData(), PathString(),
+  onnxruntime::Model model("concat_int64_slice_ends", false, ModelMetaData(), PathString(),
                            IOnnxRuntimeOpSchemaRegistryList(), domain_to_version, {},
                            DefaultLoggingManager().DefaultLogger());
   auto& graph = model.MainGraph();
@@ -367,17 +366,24 @@ static void RunConcatInt64SentinelSliceEndsTest(int64_t sentinel, int64_t step) 
   auto& ends = graph.GetOrCreateNodeArg("ends", nullptr);
   auto& y = graph.GetOrCreateNodeArg("Y", nullptr);
 
-  auto* sentinel_arg = make_int64_initializer("sentinel", {sentinel});
+  auto* end1_arg = make_int64_initializer("end1", {end1});
   auto* starts_arg = make_int64_initializer("starts", {1, step > 0 ? 0 : -1});
   auto* axes_arg = make_int64_initializer("axes", {0, 1});
   auto* steps_arg = make_int64_initializer("steps", {1, step});
 
-  graph.AddNode("concat", "Concat", "", {&end0, sentinel_arg}, {&ends}).AddAttribute("axis", int64_t{0});
+  graph.AddNode("concat", "Concat", "", {&end0, end1_arg}, {&ends}).AddAttribute("axis", int64_t{0});
   graph.AddNode("slice", "Slice", "", {&x, starts_arg, &ends, axes_arg, steps_arg}, {&y});
   ORT_THROW_IF_ERROR(graph.Resolve());
 
   std::string model_data;
   model.ToProto().SerializeToString(&model_data);
+  return model_data;
+}
+
+// The int64 limit values are 'unbounded' sentinels and are mapped to the int32 limits. Converting them with a plain
+// narrow threw a gsl::narrowing_error and failed session creation.
+static void RunConcatInt64SentinelSliceEndsTest(int64_t sentinel, int64_t step) {
+  const std::string model_data = MakeConcatInt64SliceEndsModel(sentinel, step);
   gsl::span<const std::byte> span{reinterpret_cast<const std::byte*>(model_data.data()), model_data.size()};
 #if defined(__APPLE__)
   std::vector<float> x_data(24);
@@ -395,15 +401,36 @@ static void RunConcatInt64SentinelSliceEndsTest(int64_t sentinel, int64_t step) 
                             MakeCoreMLExecutionProvider("MLProgram"),
                             feeds,
                             EPVerificationParams{ExpectedEPNodeAssignment::Some});
+#else
+  ORT_UNUSED_PARAMETER(span);
 #endif
 }
 
 TEST(CoreMLExecutionProviderTest, ConcatInt64MaxSentinelAsSliceEnds) {
   RunConcatInt64SentinelSliceEndsTest(std::numeric_limits<int64_t>::max(), 1);
+  RunConcatInt64SentinelSliceEndsTest(std::numeric_limits<int64_t>::max(), -1);
 }
 
 TEST(CoreMLExecutionProviderTest, ConcatInt64MinSentinelAsSliceEnds) {
   RunConcatInt64SentinelSliceEndsTest(std::numeric_limits<int64_t>::min(), -1);
+  RunConcatInt64SentinelSliceEndsTest(-std::numeric_limits<int64_t>::max(), -1);
+}
+
+// A finite value outside the int32 range is not a sentinel and must not be clamped: as a Slice end with a negative
+// step, 2147483648 selects nothing, but INT32_MAX means 'until the end' and would select the whole axis.
+// It is still rejected when the CoreML model is built.
+TEST(CoreMLExecutionProviderTest, ConcatFiniteOutOfRangeInt64IsNotClamped) {
+#if defined(__APPLE__)
+  const std::string model_data =
+      MakeConcatInt64SliceEndsModel(int64_t{std::numeric_limits<int32_t>::max()} + 1, -1);
+  SessionOptions so;
+  InferenceSessionWrapper session{so, GetEnvironment()};
+  ASSERT_STATUS_OK(session.RegisterExecutionProvider(MakeCoreMLExecutionProvider("MLProgram")));
+  ASSERT_STATUS_OK(session.Load(model_data.data(), static_cast<int>(model_data.size())));
+  const auto status = session.Initialize();
+  ASSERT_FALSE(status.IsOK());
+  EXPECT_THAT(status.ErrorMessage(), ::testing::HasSubstr("narrowing_error"));
+#endif
 }
 
 #endif  // !(ORT_MINIMAL_BUILD)

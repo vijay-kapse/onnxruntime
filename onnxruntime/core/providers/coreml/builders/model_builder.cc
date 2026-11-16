@@ -85,7 +85,7 @@ void CopyRawDataToRepeatedField<int64_t, int32_t>(const ONNX_NAMESPACE::TensorPr
   // Use std::transform with proper iterators
   std::transform(data, data + element_count,
                  google::protobuf::RepeatedFieldBackInserter(&repeated_field),
-                 SaturateInt64ToInt32);
+                 NarrowInt64ToInt32);
 }
 
 void CopyInt64DataToInt32(const ONNX_NAMESPACE::TensorProto& tensor_proto, MILSpec::TensorValue& tensor_value) {
@@ -93,7 +93,7 @@ void CopyInt64DataToInt32(const ONNX_NAMESPACE::TensorProto& tensor_proto, MILSp
   auto& int32_out = *tensor_value.mutable_ints()->mutable_values();
   int32_out.Reserve(num_entries);
   for (int i = 0; i < num_entries; ++i) {
-    int32_out.AddAlreadyReserved(SaturateInt64ToInt32(tensor_proto.int64_data(i)));
+    int32_out.AddAlreadyReserved(NarrowInt64ToInt32(tensor_proto.int64_data(i)));
   }
 }
 
@@ -171,7 +171,7 @@ void CopyOnnxTensorToCoreMLTensor(const ONNX_NAMESPACE::TensorProto& tensor_prot
     case ONNX_NAMESPACE::TensorProto_DataType_INT64: {
       // from: int64_data/raw, to: ints
       // CoreML tensors have a longints field, but the CoreML op definitions only use int32,
-      // so we convert any int64 to int32, saturating values that are out of range
+      // so we convert any int64 to int32 (see NarrowInt64ToInt32 for the int64 limit values)
       if (has_raw_data) {
         CopyRawDataToRepeatedField<int64_t, int32_t>(tensor_proto, *tensor_value.mutable_ints()->mutable_values());
 
